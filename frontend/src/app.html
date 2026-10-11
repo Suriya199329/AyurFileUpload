@@ -1,0 +1,35 @@
+<header><a class="brand" href="/" aria-label="Ayurvedic library home"><span class="brand-icon">ॐ</span> AyuVault</a><span class="workspace">Shared wellness</span></header>
+<main>
+  <div class="heading"><div><div class="eyebrow">BALANCE · ROOTED IN NATURE</div><h1>Your ayurvedic living library.</h1><p>Store herbal notes, rituals, prescriptions, and daily wellness records in one calm, nourishing space.</p></div><span class="stack-icon" aria-hidden="true">✦</span></div>
+  @if (error()) { <div class="alert error" role="alert">{{ error() }}</div> }
+  @if (notice()) { <div class="alert success" role="status">{{ notice() }}</div> }
+  <section class="upload-card" aria-labelledby="upload-title">
+    <div class="drop-zone" [class.dragging]="dragging()" (dragover)="$event.preventDefault(); dragging.set(true)" (dragleave)="dragging.set(false)" (drop)="drop($event)">
+      <span class="upload-icon" aria-hidden="true">↑</span>
+      <h2 id="upload-title">Drop a wellness file here</h2><p>Herbal notes, prescriptions, journals and reference sheets. Up to 20 MB each.</p>
+      <input #picker type="file" hidden accept=".doc,.docx,.pdf,.jpg,.jpeg,.png,.gif,.webp" (change)="choose($event)">
+      <button class="secondary" (click)="picker.click()" [disabled]="uploading()">Browse files</button>
+    </div>
+    @if (selected(); as file) {
+      <div class="selected"><div><strong>{{ file.name }}</strong><small>{{ size(file.size) }} · Ready to upload</small></div><button class="primary" (click)="upload()" [disabled]="uploading()">{{ uploading() ? 'Uploading…' : 'Upload file' }}</button></div>
+    }
+    @if (uploading()) { <div class="upload-progress" role="status"><progress max="100" [value]="progress()" aria-label="Upload progress"></progress><small>{{ progress() === 100 ? 'Saving to your archive…' : progress() + '% uploaded' }}</small></div> }
+  </section>
+  <section class="library" aria-labelledby="library-title">
+    <div class="library-heading"><h2 id="library-title">Your archive <span class="count">{{ total() }}</span></h2><button class="text-button" (click)="load(page())" [disabled]="loading()">↻ Refresh</button></div>
+    <form class="filters" (submit)="$event.preventDefault(); load()">
+      <label class="search"><span aria-hidden="true">⌕</span><input aria-label="Search filenames" placeholder="Search files by name…" maxlength="200" [value]="search" (input)="search = $any($event.target).value"></label>
+      <select aria-label="Filter file type" [value]="kind" (change)="kind = $any($event.target).value; load()"><option value="">All file types</option><option value="word">Word documents</option><option value="pdf">PDFs</option><option value="image">Images</option></select>
+      <button class="secondary" type="submit">Search</button>
+    </form>
+    @if (loading()) { <div class="empty" role="status">Loading your archive…</div> }
+    @else if (!files().length) { <div class="empty"><span aria-hidden="true">▱</span><h3>{{ search || kind ? 'No matching files' : 'Your archive is ready' }}</h3><p>{{ search || kind ? 'Try a different name or file type.' : 'Upload your first wellness document to begin.' }}</p></div> }
+    @else {
+      <div class="table-wrap"><table><thead><tr><th>File name</th><th>Size</th><th>Uploaded</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+        @for (file of files(); track file.id) { <tr><td><div class="filename"><span class="file-icon" [class]="'file-icon ' + file.kind">{{ file.kind === 'word' ? 'W' : file.kind === 'pdf' ? 'PDF' : 'IMG' }}</span><div><strong>{{ file.name }}</strong><small>{{ file.kind === 'word' ? 'Word document' : file.kind === 'pdf' ? 'PDF document' : 'Image' }}</small></div></div></td><td class="muted">{{ size(file.size) }}</td><td class="muted">{{ file.uploadedAt | date:'mediumDate' }}</td><td><button class="download" (click)="download(file)" [attr.aria-label]="'Download ' + file.name">↓ <span>Download</span></button></td></tr> }
+      </tbody></table></div>
+      <div class="pagination"><span>Page {{ page() }} of {{ pages }} · {{ total() }} files</span><div><button class="secondary" [disabled]="page() <= 1" (click)="load(page() - 1)">Previous</button><button class="secondary" [disabled]="page() >= pages" (click)="load(page() + 1)">Next</button></div></div>
+    }
+  </section>
+  <footer>AYURVEDIC ARCHIVE <span>Wellness · Notes · Remedies</span></footer>
+</main>

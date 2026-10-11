@@ -1,0 +1,156 @@
+name: Deploy to Azure
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AZURE_NAME_PREFIX: ${{ vars.AZURE_NAME_PREFIX }}
+      SQL_ADMIN_OBJECT_ID: ${{ vars.SQL_ADMIN_OBJECT_ID }}
+      SQL_ADMIN_LOGIN: ${{ vars.SQL_ADMIN_LOGIN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run backend checks
+        run: dotnet run --project checks/FileLibrary.Checks.csproj
+
+      - name: Publish API
+        run: dotnet publish backend/FileLibrary.Api.csproj --configuration Release --output "$RUNNER_TEMP/api"
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Validate Azure deployment template
+        run: az bicep build --file infra/main.bicep --outfile "$RUNNER_TEMP/main.json"
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Provision Azure resources
+        id: provision
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variable in AZURE_RESOURCE_GROUP AZURE_LOCATION AZURE_NAME_PREFIX SQL_ADMIN_OBJECT_ID SQL_ADMIN_LOGIN; do
+            if [[ -z "${!variable}" ]]; then
+              echo "::error::$variable must be configured as a GitHub Actions variable."
+              exit 1
+            fi
+          done
+
+          az group create \
+            --name "$AZURE_RESOURCE_GROUP" \
+            --location "$AZURE_LOCATION" \
+            --output none
+
+          az deployment group create \
+            --name file-library \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters \
+              namePrefix="$AZURE_NAME_PREFIX" \
+              location="$AZURE_LOCATION" \
+              sqlAdminObjectId="$SQL_ADMIN_OBJECT_ID" \
+              sqlAdminLogin="$SQL_ADMIN_LOGIN" \
+            --output none
+
+          deployment="file-library"
+          api_name=$(az deployment group show --resource-group "$AZURE_RESOURCE_GROUP" --name "$deployment" --query properties.outputs.apiName.value --output tsv)
+          api_url=$(az deployment group show --resource-group "$AZURE_RESOURCE_GROUP" --name "$deployment" --query properties.outputs.apiUrl.value --output tsv)
+          sql_server_name=$(az deployment group show --resource-group "$AZURE_RESOURCE_GROUP" --name "$deployment" --query properties.outputs.sqlServerName.value --output tsv)
+          static_name=$(az deployment group show --resource-group "$AZURE_RESOURCE_GROUP" --name "$deployment" --query properties.outputs.staticWebAppName.value --output tsv)
+          echo "api_name=$api_name" >> "$GITHUB_OUTPUT"
+          echo "api_url=$api_url" >> "$GITHUB_OUTPUT"
+          echo "sql_server_name=$sql_server_name" >> "$GITHUB_OUTPUT"
+          echo "static_name=$static_name" >> "$GITHUB_OUTPUT"
+
+      - name: Allow API outbound addresses through SQL firewall
+        shell: bash
+        run: |
+          set -euo pipefail
+          ips=$(az webapp show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "${{ steps.provision.outputs.api_name }}" \
+            --query "[outboundIpAddresses, possibleOutboundIpAddresses]" \
+            --output tsv | tr ',\t' '\n\n' | sort -u)
+          while IFS= read -r ip; do
+            [[ -z "$ip" ]] && continue
+            if [[ ! "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::Unexpected App Service outbound IP: $ip"
+              exit 1
+            fi
+            az sql server firewall-rule create \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --server "${{ steps.provision.outputs.sql_server_name }}" \
+              --name "api-${ip//./-}" \
+              --start-ip-address "$ip" \
+              --end-ip-address "$ip" \
+              --output none
+          done <<< "$ips"
+
+      - name: Deploy API
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$RUNNER_TEMP/api" && zip -qr "$RUNNER_TEMP/api.zip" .)
+          az webapp deploy \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "${{ steps.provision.outputs.api_name }}" \
+            --src-path "$RUNNER_TEMP/api.zip" \
+            --type zip
+
+      - name: Set frontend API URL
+        env:
+          API_URL: ${{ steps.provision.outputs.api_url }}
+        run: |
+          node -e "require('node:fs').writeFileSync('frontend/dist/file-library/browser/api-config.js', 'window.__API_BASE_URL__ = ' + JSON.stringify(process.env.API_URL) + ';\\n')"
+
+      - name: Get Static Web Apps deployment token
+        id: static-token
+        shell: bash
+        run: |
+          token=$(az staticwebapp secrets list \
+            --name "${{ steps.provision.outputs.static_name }}" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query properties.apiKey \
+            --output tsv)
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy frontend
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.static-token.outputs.token }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: upload
+          app_location: frontend/dist/file-library/browser
+          api_location: ''
+          output_location: ''
+          skip_app_build: true
