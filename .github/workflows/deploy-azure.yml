@@ -65,10 +65,15 @@ jobs:
             fi
           done
 
-          az group create \
-            --name "$AZURE_RESOURCE_GROUP" \
-            --location "$AZURE_LOCATION" \
-            --output none
+                   # Create resource group only if it doesn't exist
+          if [[ "$(az group exists --name "$AZURE_RESOURCE_GROUP")" == "false" ]]; then
+            az group create \
+              --name "$AZURE_RESOURCE_GROUP" \
+              --location "$AZURE_LOCATION" \
+              --output none
+          else
+            echo "Resource group $AZURE_RESOURCE_GROUP already exists."
+          fi
 
           az deployment group create \
             --name file-library \
