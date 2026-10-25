@@ -51,9 +51,9 @@ resource plan 'Microsoft.Web/serverfarms@2024-04-01' = {
   location: location
   kind: 'linux'
   sku: {
-    name: 'B1'
+    name: 'F1'
     tier: 'Basic'
-    size: 'B1'
+    size: 'F1'
     capacity: 1
   }
   properties: {
@@ -72,7 +72,7 @@ resource api 'Microsoft.Web/sites@2024-04-01' = {
     serverFarmId: plan.id
     httpsOnly: true
     siteConfig: {
-      alwaysOn: true
+      alwaysOn: false
       ftpsState: 'Disabled'
       http20Enabled: true
       linuxFxVersion: 'DOTNETCORE|10.0'
